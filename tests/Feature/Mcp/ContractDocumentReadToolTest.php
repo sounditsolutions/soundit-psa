@@ -422,7 +422,8 @@ class ContractDocumentReadToolTest extends TestCase
         $updatedAtBefore = $before->getRawOriginal('updated_at');
         $this->assertSame($long, $before->extracted_text);
         // Move the clock, so a write that stamps timestamps would also change updated_at.
-        // The whole-row comparison below catches a write to any column either way.
+        // The whole-row comparison below catches a changed value in any compared column;
+        // a write that leaves every value the same is not visible to it.
         $this->travel(5)->minutes();
 
         $result = $this->ok($this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]));
@@ -678,13 +679,14 @@ class ContractDocumentReadToolTest extends TestCase
         $this->assertSame(['client_id', 'document_id'], McpToolRegistry::getContractDocumentTool()['input_schema']['required']);
     }
 
-    public function test_reads_write_nothing(): void
+    public function test_reads_write_nothing_to_the_contract_or_its_documents(): void
     {
+        // The contract and document rows only: each tools/call also writes its expected mcp_audit_logs row.
         $cap = AssistantToolExecutor::CONTRACT_DOCUMENT_TEXT_CAP;
         $client = Client::factory()->create();
         $contract = $this->contract($client);
-        // One document per get arm: null, plain, blank and cut.
-        $document = $this->document($contract, ['ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
+        // One document per get arm, for both extracted_text and ai_summary: null, plain, blank and cut.
+        $document = $this->document($contract, ['extracted_text' => null, 'ai_summary' => null, 'summary_status' => DocumentSummaryStatus::Pending]);
         $plain = $this->document($contract, ['original_filename' => 'synthetic-plain.pdf']);
         $blank = $this->document($contract, ['original_filename' => 'synthetic-blank.pdf', 'extracted_text' => '   ', 'ai_summary' => '   ']);
         $cut = $this->document($contract, ['original_filename' => 'synthetic-cut.pdf', 'extracted_text' => str_repeat('c', $cap + 1), 'ai_summary' => str_repeat('d', $cap + 1)]);
@@ -708,6 +710,21 @@ class ContractDocumentReadToolTest extends TestCase
         }
 
         $this->assertSame($before, [$contract->fresh()->toArray(), ContractDocument::withTrashed()->orderBy('id')->get()->toArray()]);
+    }
+
+    public function test_a_null_extracted_text_never_returns_the_stored_files_bytes(): void
+    {
+        Storage::disk('local')->put(self::DISK_PATH, 'F1-MARKER-FILE-BYTES');
+        $this->assertSame('F1-MARKER-FILE-BYTES', Storage::disk('local')->get(self::DISK_PATH));
+        $client = Client::factory()->create();
+        $document = $this->document($this->contract($client), ['extracted_text' => null]);
+
+        $response = $this->callTool($this->token(), 'get_contract_document', ['client_id' => $client->id, 'document_id' => $document->id]);
+        $result = $this->ok($response);
+
+        $this->assertNull($result['extracted_text']);
+        $this->assertStringNotContainsString('F1-MARKER-FILE-BYTES', (string) $response->getContent());
+        $this->assertNoStorageLeak($response);
     }
 
     /** The raw response must never carry the stored path or a URL. */
