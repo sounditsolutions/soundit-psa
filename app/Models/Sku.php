@@ -240,8 +240,10 @@ class Sku extends Model
      * The hourly SKU is THE active SKU in this SKU's category with
      * prepaid_time_minutes = 60. Fail closed: no category, zero matches or
      * more than one match give null, never a guessed rate. So does a value
-     * (rate x this block's hours) that is not higher than unit_price, since an
-     * anchor at or below the block price says nothing true about a saving.
+     * (rate x this block's hours, in integer cents) that is not higher than
+     * unit_price, since an anchor at or below the block price says nothing
+     * true about a saving. The comparison is against unit_price, never the
+     * promo price: during a promo a value between the two is still refused.
      *
      * Computed, not stored: no per-SKU field exists for it.
      *
@@ -265,17 +267,20 @@ class Sku extends Model
             return null;
         }
 
-        $rate = (float) $hourly->first()->unit_price;
-        $valueCents = (int) round($rate * 100 * (int) $this->prepaid_time_minutes / 60);
+        // Integer cents: the rate is taken to cents once, the value is rounded
+        // once, and the comparison with the block price is cent against cent.
+        $rateCents = (int) round((float) $hourly->first()->unit_price * 100);
+        $valueCents = (int) round($rateCents * (int) $this->prepaid_time_minutes / 60);
+        $blockCents = (int) round((float) $this->unit_price * 100);
 
-        if ($valueCents <= (int) round((float) $this->unit_price * 100)) {
+        if ($valueCents <= $blockCents) {
             return null;
         }
 
         return [
-            'rate' => $rate,
+            'rate' => $rateCents / 100.0,
             'hours' => round((int) $this->prepaid_time_minutes / 60, 2),
-            'value' => $valueCents / 100,
+            'value' => $valueCents / 100.0,
         ];
     }
 

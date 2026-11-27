@@ -22,7 +22,11 @@ use Tests\TestCase;
  * other-category hourly SKU, or a value not above the block price: no row.
  *
  * Synthetic prices: hourly 40.00; block 150 minutes at 80.00 (anchor 100.00);
- * promo 70.00.
+ * promo 70.00. The value is computed in integer cents.
+ *
+ * The singular "hour" arm of the template is not reachable: a 60-minute
+ * block in the category is itself a 60-minute match, so it either matches
+ * only itself (value equal to its price: no anchor) or makes two matches.
  */
 class PortalPrepayAnchorTest extends TestCase
 {
@@ -213,6 +217,64 @@ class PortalPrepayAnchorTest extends TestCase
         $this->hourly();
 
         $this->page()->assertSee(self::ANCHOR_ROW, false)->assertSee('$100.00');
+    }
+
+    public function test_a_blank_or_whitespace_category_shows_no_anchor(): void
+    {
+        $hourly = $this->hourly();
+
+        foreach (['', '  '] as $blank) {
+            // Block and hourly SKU share the same blank category, so only the
+            // blank-category guard stands between them and a match.
+            $this->block->update(['category' => $blank]);
+            $hourly->update(['category' => $blank]);
+            $this->assertSame($blank, $this->block->fresh()->category, 'fixture keeps the blank category');
+
+            $this->page()->assertDontSee('at our hourly rate')->assertDontSee('Block price');
+            $this->assertNull($this->block->fresh()->portalHourlyAnchor(), 'category '.json_encode($blank));
+        }
+    }
+
+    public function test_during_a_promo_a_value_between_the_promo_and_block_price_shows_no_anchor(): void
+    {
+        // 2.5 x 30.00 = 75.00: above the 70.00 promo, at or below the 80.00
+        // block price. The guard compares against the block price.
+        $this->hourly(['unit_price' => 30.00]);
+        $this->promo();
+
+        $this->page()
+            ->assertSee('<strong>$70.00</strong>', false) // the promo is in force
+            ->assertDontSee('at our hourly rate')->assertDontSee('Block price');
+        $this->assertNull($this->block->fresh()->portalHourlyAnchor());
+    }
+
+    public function test_fractional_hours_pin_the_hours_and_value_text(): void
+    {
+        // 100 minutes = 1.67 hours; 4000 cents x 100 / 60 = 6666.67, rounded
+        // once to 6667 cents.
+        $this->block->update(['unit_price' => 60.00, 'prepaid_time_minutes' => 100]);
+        $this->hourly();
+
+        $this->page()
+            ->assertSeeInOrder(['1.67 hours at our hourly rate ($40.00/h)', '$66.67', 'Block price', '$60.00'], false);
+        $this->assertSame(
+            ['rate' => 40.0, 'hours' => 1.67, 'value' => 66.67],
+            $this->block->fresh()->portalHourlyAnchor(),
+        );
+    }
+
+    public function test_the_value_is_rounded_to_the_cent_once(): void
+    {
+        // 1999 cents x 150 / 60 = 4997.5, rounded once to 4998 cents.
+        $this->block->update(['unit_price' => 45.00]);
+        $this->hourly(['unit_price' => 19.99]);
+
+        $this->page()
+            ->assertSeeInOrder(['2.5 hours at our hourly rate ($19.99/h)', '$49.98', 'Block price', '$45.00'], false);
+        $this->assertSame(
+            ['rate' => 19.99, 'hours' => 2.5, 'value' => 49.98],
+            $this->block->fresh()->portalHourlyAnchor(),
+        );
     }
 
     public function test_a_soft_deleted_hourly_sku_is_not_a_match(): void
