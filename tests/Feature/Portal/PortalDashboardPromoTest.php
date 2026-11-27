@@ -164,23 +164,43 @@ class PortalDashboardPromoTest extends TestCase
         $this->dashboardAt('2026-12-15 18:00:00')->assertDontSee('See the special');
     }
 
+    /**
+     * A second, active hours contract with no portal-prepay SKU: it keeps the
+     * Support Hours card on the page (the card shows only while an active
+     * hours contract exists) without being purchasable itself, so a missing
+     * promo line is down to the contract filter, not a hidden card.
+     */
+    private function keepTheCardVisible(): void
+    {
+        $this->contract->replicate()->fill([
+            'name' => 'Example Hours Agreement',
+            'portal_prepay_sku_id' => null,
+        ])->save();
+    }
+
     public function test_a_dollar_prepay_contract_is_not_advertised(): void
     {
         // A dollar-prepay contract cannot buy hours in the portal.
+        $this->keepTheCardVisible();
         $this->contract->update(['prepay_as_amount' => true]);
         $this->assertFalse($this->contract->fresh()->is_portal_purchasable, 'fixture is not purchasable');
 
         $this->dashboardAt('2026-12-15 18:00:00')
+            ->assertSee('Support Hours')
+            ->assertSee('Example Hours Agreement')
             ->assertDontSee('See the special')
             ->assertDontSee(route('portal.prepaid.form', $this->contract), false);
     }
 
     public function test_an_inactive_contract_is_not_advertised(): void
     {
+        $this->keepTheCardVisible();
         $this->contract->update(['status' => 'expired']);
         $this->assertFalse($this->contract->fresh()->is_portal_purchasable, 'fixture is not purchasable');
 
         $this->dashboardAt('2026-12-15 18:00:00')
+            ->assertSee('Support Hours')
+            ->assertSee('Example Hours Agreement')
             ->assertDontSee('See the special')
             ->assertDontSee(route('portal.prepaid.form', $this->contract), false);
     }
