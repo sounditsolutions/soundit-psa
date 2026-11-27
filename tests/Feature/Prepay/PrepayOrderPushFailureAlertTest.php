@@ -36,7 +36,6 @@ class PrepayOrderPushFailureAlertTest extends TestCase
     {
         parent::setUp();
         Http::preventStrayRequests();
-        Http::fake();
         Queue::fake();
         Setting::setValue('portal_enabled', '1');
         User::factory()->create(['is_active' => true]);
@@ -145,6 +144,28 @@ class PrepayOrderPushFailureAlertTest extends TestCase
         $this->order(['stripe_customer_id' => 'cus_synthetic2']);
 
         $this->assertSame([], $this->pushFailedAlerts());
+    }
+
+    public function test_a_successful_qbo_push_sends_no_alert(): void
+    {
+        $this->mock(QboSyncService::class, fn (MockInterface $m) => $m->shouldReceive('pushInvoiceToQbo')->once());
+
+        $this->order(['qbo_customer_id' => 'qbo-synthetic-2']);
+
+        $this->assertSame([], $this->pushFailedAlerts());
+    }
+
+    public function test_a_notifier_throwing_an_error_not_an_exception_never_affects_the_order_and_logs_its_class(): void
+    {
+        Log::spy();
+        $this->mock(StripeSyncService::class, fn (MockInterface $m) => $m->shouldReceive('pushInvoiceToStripe')->andThrow(new \RuntimeException('Synthetic Stripe refusal')));
+        $this->partialMock(NotificationService::class, fn (MockInterface $m) => $m->shouldReceive('notifyInvoicePushFailed')->once()->andThrow(new \TypeError('Synthetic notifier type fault')));
+
+        $this->order(['stripe_customer_id' => 'cus_synthetic4']);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg, $ctx = []) => $msg === '[PrepayOrder] Invoice push-failure alert threw'
+            && ($ctx['exception'] ?? null) === \TypeError::class
+            && ($ctx['error'] ?? null) === 'Synthetic notifier type fault')->once();
     }
 
     public function test_a_throwing_notifier_never_affects_the_order_and_logs_a_warning(): void

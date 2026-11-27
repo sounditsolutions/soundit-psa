@@ -121,7 +121,9 @@ class PrepayOrderService
 
     /**
      * Push the invoice to the client's billing backend (Stripe or QBO).
-     * Called via afterResponse() — not inline during the HTTP request.
+     * The portal purchase calls it from an app()->terminating() callback, after
+     * the response; the auto top-up (PrepayAlertService) calls it inline with
+     * $portalOrder false.
      */
     public function pushToBillingBackend(Invoice $invoice, bool $portalOrder = true): void
     {
@@ -137,17 +139,15 @@ class PrepayOrderService
             return;
         }
 
-        $backend = null;
+        $backend = $client->stripe_customer_id ? 'Stripe' : 'QBO';
 
         try {
-            if ($client->stripe_customer_id) {
-                $backend = 'Stripe';
+            if ($backend === 'Stripe') {
                 app(StripeSyncService::class)->pushInvoiceToStripe($invoice);
                 Log::info('[PrepayOrder] Invoice pushed to Stripe', [
                     'invoice_id' => $invoice->id,
                 ]);
             } else {
-                $backend = 'QBO';
                 app(QboSyncService::class)->pushInvoiceToQbo($invoice);
                 Log::info('[PrepayOrder] Invoice pushed to QBO', [
                     'invoice_id' => $invoice->id,
@@ -158,7 +158,7 @@ class PrepayOrderService
                 'invoice_id' => $invoice->id,
                 'error' => $e->getMessage(),
             ]);
-            $this->alertPushFailed($invoice, $backend ?? 'None', $e->getMessage(), $portalOrder);
+            $this->alertPushFailed($invoice, $backend, $e->getMessage(), $portalOrder);
         }
     }
 

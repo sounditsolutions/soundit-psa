@@ -141,17 +141,15 @@ class PortalOrderService
             return;
         }
 
-        $backend = null;
+        $backend = $client->stripe_customer_id ? 'Stripe' : 'QBO';
 
         try {
-            if ($client->stripe_customer_id) {
-                $backend = 'Stripe';
+            if ($backend === 'Stripe') {
                 app(StripeSyncService::class)->pushInvoiceToStripe($invoice);
                 Log::info('[PortalOrder] Invoice pushed to Stripe', [
                     'invoice_id' => $invoice->id,
                 ]);
             } else {
-                $backend = 'QBO';
                 app(QboSyncService::class)->pushInvoiceToQbo($invoice);
                 Log::info('[PortalOrder] Invoice pushed to QBO', [
                     'invoice_id' => $invoice->id,
@@ -162,7 +160,7 @@ class PortalOrderService
                 'invoice_id' => $invoice->id,
                 'error' => $e->getMessage(),
             ]);
-            $this->alertPushFailed($invoice, $backend ?? 'None', $e->getMessage(), true);
+            $this->alertPushFailed($invoice, $backend, $e->getMessage(), true);
         }
     }
 

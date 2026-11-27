@@ -38,7 +38,6 @@ class InvoicePushFailedEmailTest extends TestCase
     {
         parent::setUp();
         Http::preventStrayRequests();
-        Http::fake();
         Queue::fake();
         Setting::setValue('graph_mailbox', 'alerts@example.test');
         User::factory()->create(['is_active' => true]);
@@ -159,5 +158,25 @@ class InvoicePushFailedEmailTest extends TestCase
         $this->assertStringContainsString('Client: Example &lt;b&gt;Bold&lt;/b&gt; &amp; Co.', $mail['body']);
         $this->assertStringContainsString('Error: &lt;script&gt;x&lt;/script&gt; \[link\](https://example.test) second line', $mail['body']);
         $this->assertStringNotContainsString('<script>', $mail['body']);
+    }
+
+    public function test_each_markdown_character_is_escaped_values_are_trimmed_and_invoice_number_and_backend_are_escaped(): void
+    {
+        $client = Client::create(['name' => "  \tEx*a_m`p~l#e\\ Co.  \n"]);
+        $invoice = Invoice::create([
+            'client_id' => $client->id,
+            'invoice_number' => 'EX_20*0#1',
+            'invoice_date' => '2026-11-01',
+            'due_date' => '2026-11-01',
+            'status' => InvoiceStatus::Posted,
+        ]);
+        app(NotificationService::class)->notifyInvoicePushFailed($invoice, ' Q`B~O ', "\n a*b _c_ `d` ~e~ #f \\g \n", true);
+        $this->deliver();
+
+        $lines = explode("\n", $this->only()['body']);
+        $this->assertContains('Invoice: #EX\_20\*0\#1', $lines, 'invoice_number goes through the escape');
+        $this->assertContains('Client: Ex\*a\_m\`p\~l\#e\\\\ Co.', $lines, 'each of * _ ` ~ # \\ is escaped, and leading/trailing whitespace is trimmed');
+        $this->assertContains('Backend: Q\`B\~O', $lines, 'backend goes through the escape and is trimmed');
+        $this->assertContains('Error: a\*b \_c\_ \`d\` \~e\~ \#f \\\\g', $lines, 'each of * _ ` ~ # \\ in the error is escaped, and it is trimmed');
     }
 }

@@ -291,8 +291,11 @@ class SendTicketNotification implements ShouldQueue
 
         if ($event === NotificationEventType::InvoicePushFailed) {
             $ctx = json_decode($this->extraContext ?? '{}', true);
-            // The body is rendered as Markdown into an HTML email, so each context
-            // value is kept on one line, HTML-escaped and Markdown-escaped.
+            // The body is rendered as GitHub-flavoured Markdown into an HTML email.
+            // Each context value has its whitespace runs collapsed to one space and
+            // is trimmed; < > & are HTML-escaped (quotes are not); and \ ` * _ [ ] ~ #
+            // are backslash-escaped. Nothing else is escaped: a bare URL or email
+            // address in a value may still be autolinked.
             $esc = fn ($value): string => addcslashes(htmlspecialchars(trim(preg_replace('/\s+/', ' ', (string) $value)), ENT_NOQUOTES), '\\`*_[]~#');
             $lines[] = 'An invoice could not be pushed to billing.';
             $lines[] = '';
