@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client portal dashboard: Support Hours card with a promo in force</title>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_portal.css">
+<style>
+.hours-card { border-left: 4px solid var(--psa-colors-warning); } /* existing view: border-start border-4 border-warning, unchanged */
+</style></head>
+<body>
+<nav class="topnav"><b>Example MSP Portal</b><a href="#">Dashboard</a><a href="#">Tickets</a><a href="#">Invoices</a><a href="#">Contracts</a><a href="#">Billing Portal</a></nav>
+<main>
+<p class="caption">Portal &gt; Dashboard, a portal-prepay SKU has a promo in force (same window check as Sku::portalPrepayUnitPrice). Sample data only: Example Dental Co., 2.5 h block $600.00, promo $500.00 until Dec 31, 2026 11:59:59 PM PST.</p>
+<div class="welcome">Welcome, Alex</div>
+<div class="grid3" style="margin-bottom:var(--psa-spacing-md)">
+  <div class="stat"><div class="v">2</div><div class="l">Open Tickets</div></div>
+  <div class="stat"><div class="v">$0.00</div><div class="l">Outstanding Balance</div></div>
+</div>
+<div class="card hours-card">
+  <div class="card-body">
+    <div class="hours-head">
+      <h5>Support Hours</h5>
+      <button class="btn btn-accent" type="button">Top Up Hours</button>
+    </div>
+    <div><span class="big">1.5</span> <span class="muted" style="font-size:1.1rem">hours remaining</span></div>
+    <div class="muted small" style="margin-top:4px">Example Dental Co. Prepaid Support</div>
+    <div class="promo">
+      <div><span class="tag">Special</span><strong>2.5 hours for $500.00</strong> <span class="muted">(normally $600.00)</span> until Dec 31, 2026 11:59 PM PST.</div>
+      <a href="#">See the special &rarr;</a>
+    </div>
+  </div>
+</div>
+</main></body></html>

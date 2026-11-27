@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client portal: Order Confirmed, pay link not ready yet</title>
+<link rel="stylesheet" href="../_tokens.css"><link rel="stylesheet" href="_portal.css">
+</head>
+<body>
+<nav class="topnav"><b>Example MSP Portal</b><a href="#">Dashboard</a><a href="#">Tickets</a><a href="#">Invoices</a><a href="#">Contracts</a><a href="#">Billing Portal</a></nav>
+<main>
+<p class="caption">Portal &gt; Order Confirmed (prepaid; the shop confirmation uses the same block), pay link not ready yet. Replaces "Preparing payment link..." and "You'll receive a payment link shortly." Sample data only.</p>
+<div class="narrow">
+  <div class="center" style="margin-bottom:var(--psa-spacing-md)">
+    <span class="ok-mark" aria-hidden="true">&#10003;</span>
+    <h4 style="margin-top:var(--psa-spacing-sm)">Order Confirmed</h4>
+    <p class="muted">Your prepaid time purchase has been submitted.</p>
+  </div>
+  <div class="card">
+    <div class="card-header">Order Details</div>
+    <div class="card-body">
+      <table class="kv">
+        <tr><td class="k">Invoice</td><td>INV-00042</td></tr>
+        <tr><td class="k">Agreement</td><td>Example Dental Co. Prepaid Support</td></tr>
+        <tr><td class="k">Hours</td><td>2.5h</td></tr>
+        <tr><td class="k">Subtotal</td><td>$500.00</td></tr>
+        <tr><td class="k">Total</td><td><strong>$500.00</strong></td></tr>
+        <tr><td class="k">Status</td><td><span class="badge b-warn">Unpaid</span></td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="notice" role="status">
+    <h6>Your pay link is on its way</h6>
+    <p>It usually appears right here within a minute. It will also be on this invoice under <a class="link" href="#">Invoices</a>, so you can pay later.</p>
+    <p class="muted">Not there after a few minutes? Reply to any email from us or call us at (555) 010-0100, and we'll send it to you.</p>
+  </div>
+  <div style="display:flex;justify-content:space-between">
+    <button class="btn btn-outline" type="button">View Invoice</button>
+    <button class="btn btn-outline" type="button">Back to Dashboard</button>
+  </div>
+</div>
+</main></body></html>
