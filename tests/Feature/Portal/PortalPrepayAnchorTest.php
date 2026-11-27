@@ -204,6 +204,17 @@ class PortalPrepayAnchorTest extends TestCase
         $this->page()->assertSee(self::ANCHOR_ROW, false)->assertSee('$100.00');
     }
 
+    public function test_only_a_60_minute_sku_is_the_hourly_rate_not_other_timed_skus(): void
+    {
+        // A 30-minute SKU and a second block share the category; neither is
+        // the hourly rate, so the single 60-minute SKU still is.
+        $this->sku('Example Half Hour', 25.00, 30);
+        $this->sku('Example 5 Hour Block', 150.00, 300);
+        $this->hourly();
+
+        $this->page()->assertSee(self::ANCHOR_ROW, false)->assertSee('$100.00');
+    }
+
     public function test_a_soft_deleted_hourly_sku_is_not_a_match(): void
     {
         $this->hourly()->delete();
