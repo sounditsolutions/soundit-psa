@@ -31,6 +31,8 @@ class InvoicePushFailedEmailTest extends TestCase
 
     private const PORTAL_LINE = 'A client ordered this in the portal and is waiting for a pay link. Push the invoice from its page, or send the client the pay link.';
 
+    private const PORTAL_UNMAPPED_LINE = "This client isn't mapped to Stripe or QBO. Map the client, then push the invoice from its page.";
+
     /** @var list<array{subject: string, body: string}> */
     private array $sent = [];
 
@@ -93,6 +95,20 @@ class InvoicePushFailedEmailTest extends TestCase
         $this->assertStringContainsString('Error: Synthetic QBO refusal', $mail['body']);
         $this->assertStringContainsString(route('invoices.show', $invoice), $mail['body']);
         $this->assertStringContainsString(self::PORTAL_LINE, $mail['body']);
+        $this->assertStringNotContainsString(self::PORTAL_UNMAPPED_LINE, $mail['body']);
+    }
+
+    public function test_portal_order_email_for_an_unmapped_client_has_the_unmapped_line_not_the_generic_one(): void
+    {
+        $invoice = $this->invoice();
+        app(NotificationService::class)->notifyInvoicePushFailed($invoice, 'None', 'Client "Example Widgets Co." is not mapped to QBO or Stripe.', true);
+        $this->deliver();
+
+        $mail = $this->only();
+        $this->assertSame('Invoice push failed: Example Widgets Co. - Invoice #EX-2002 (None)', $mail['subject']);
+        $this->assertContains(self::PORTAL_UNMAPPED_LINE, explode("\n", $mail['body']));
+        $this->assertStringNotContainsString(self::PORTAL_LINE, $mail['body']);
+        $this->assertStringNotContainsString('send the client the pay link', $mail['body']);
     }
 
     public function test_without_the_flag_the_portal_line_is_absent(): void
@@ -146,6 +162,7 @@ class InvoicePushFailedEmailTest extends TestCase
         $this->assertStringContainsString('Error: Client "Example Unmapped Co." is not mapped to QBO or Stripe.', $mail['body']);
         $this->assertStringContainsString(route('invoices.show', $invoice), $mail['body']);
         $this->assertStringNotContainsString('waiting for a pay link', $mail['body']);
+        $this->assertStringNotContainsString(self::PORTAL_UNMAPPED_LINE, $mail['body']);
     }
 
     public function test_context_values_are_escaped_for_the_html_body(): void

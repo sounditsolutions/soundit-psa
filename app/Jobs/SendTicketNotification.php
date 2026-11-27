@@ -305,7 +305,9 @@ class SendTicketNotification implements ShouldQueue
             $lines[] = 'Error: '.$esc($ctx['error'] ?? 'Unknown');
             if ($ctx['portal_order'] ?? false) {
                 $lines[] = '';
-                $lines[] = 'A client ordered this in the portal and is waiting for a pay link. Push the invoice from its page, or send the client the pay link.';
+                $lines[] = ($ctx['backend'] ?? null) === 'None'
+                    ? "This client isn't mapped to Stripe or QBO. Map the client, then push the invoice from its page."
+                    : 'A client ordered this in the portal and is waiting for a pay link. Push the invoice from its page, or send the client the pay link.';
             }
             if ($invoiceId = $ctx['invoice_id'] ?? null) {
                 $lines[] = '';
