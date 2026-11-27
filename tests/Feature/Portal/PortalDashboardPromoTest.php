@@ -164,6 +164,27 @@ class PortalDashboardPromoTest extends TestCase
         $this->dashboardAt('2026-12-15 18:00:00')->assertDontSee('See the special');
     }
 
+    public function test_a_dollar_prepay_contract_is_not_advertised(): void
+    {
+        // A dollar-prepay contract cannot buy hours in the portal.
+        $this->contract->update(['prepay_as_amount' => true]);
+        $this->assertFalse($this->contract->fresh()->is_portal_purchasable, 'fixture is not purchasable');
+
+        $this->dashboardAt('2026-12-15 18:00:00')
+            ->assertDontSee('See the special')
+            ->assertDontSee(route('portal.prepaid.form', $this->contract), false);
+    }
+
+    public function test_an_inactive_contract_is_not_advertised(): void
+    {
+        $this->contract->update(['status' => 'expired']);
+        $this->assertFalse($this->contract->fresh()->is_portal_purchasable, 'fixture is not purchasable');
+
+        $this->dashboardAt('2026-12-15 18:00:00')
+            ->assertDontSee('See the special')
+            ->assertDontSee(route('portal.prepaid.form', $this->contract), false);
+    }
+
     public function test_two_contracts_on_the_sku_link_to_the_chooser(): void
     {
         $this->contract->replicate()->fill(['name' => 'Example Second Agreement'])->save();

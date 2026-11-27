@@ -3,8 +3,10 @@
     Copy pending approval; a change is a string swap here.
 
     The "or call us at ..." clause appears only when PortalConfig::supportPhone()
-    is set. The confirmation poll swaps this block for Pay Now when the link
-    arrives and otherwise leaves it in place.
+    is set. The confirmation poll replaces this block with Pay Now when the
+    link arrives, and with the "not payable" notice when the invoice stops
+    being client-payable (e.g. voided mid-poll). When it gives up or a fetch
+    fails, it leaves the block in place.
 
     Expects: nothing (reads PortalConfig)
 --}}

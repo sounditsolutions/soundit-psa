@@ -16,10 +16,12 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * One pay-link rule for every portal pay surface (App\Support\PortalPayLink):
- * the prepaid and shop order confirmations (page and poll) and the portal
- * invoice show and index pages. BenjiPays, then the Stripe page, then the
- * QuickBooks billing-portal page; nothing for a non-payable invoice.
+ * One pay-link rule (App\Support\PortalPayLink) for the prepaid and shop
+ * order confirmations (page and poll) and the portal invoice show and index
+ * pages; the dashboard's Unpaid Invoices list is not covered. BenjiPays, then
+ * the Stripe page, then the QuickBooks billing-portal page; nothing for a
+ * non-payable invoice, and on the confirmations nothing for a partially paid
+ * one. Also CSRF on every POST render and the escaped poll payment URL.
  *
  * Also the confirmations' "pay link is on its way" copy and its phone clause.
  *
@@ -271,6 +273,106 @@ class PortalPayLinkTest extends TestCase
         $this->page('portal.invoices.show', $invoice)->assertOk()
             ->assertSee('method="POST" action="'.route('portal.invoices.pay-online', $invoice).'"', false)
             ->assertDontSee('Paying online will charge the full');
+    }
+
+    // ── #1173 on the confirmations: no Pay Now at the full total ──
+
+    public function test_a_partially_paid_stripe_invoice_offers_no_pay_now_on_the_confirmations_or_polls(): void
+    {
+        $prepaid = $this->partial($this->invoice(['qbo_invoice_id' => '4255', 'stripe_invoice_url' => self::STRIPE_URL]));
+        $shop = $this->partial($this->shopInvoice(['qbo_invoice_id' => '4256', 'stripe_invoice_url' => self::STRIPE_URL]));
+
+        foreach (['portal.prepaid.confirmation' => $prepaid, 'portal.shop.confirmation' => $shop] as $route => $invoice) {
+            $this->page($route, $invoice)->assertOk()
+                ->assertDontSee('Pay Now')
+                ->assertDontSee(self::STRIPE_URL, false)
+                ->assertDontSee('Your pay link is on its way')
+                ->assertSee('Partially paid — $100.00');
+        }
+        foreach (['portal.prepaid.payment-status' => $prepaid, 'portal.shop.payment-status' => $shop] as $route => $invoice) {
+            $this->actingAs($this->person, 'portal')->getJson(route($route, $invoice))
+                ->assertJsonPath('payment_url', null);
+        }
+
+        // The invoice page keeps its link with the full-amount caveat beside it.
+        $this->page('portal.invoices.show', $prepaid)->assertOk()
+            ->assertSee(self::STRIPE_URL, false)
+            ->assertSee('Paying online will charge the full $250.00');
+    }
+
+    public function test_a_partially_paid_benjipays_invoice_offers_no_pay_now_on_the_confirmations_or_polls(): void
+    {
+        $this->enableBenjiPays();
+        $prepaid = $this->partial($this->invoice(['qbo_invoice_id' => '4257']));
+        $shop = $this->partial($this->shopInvoice(['qbo_invoice_id' => '4258']));
+
+        foreach (['portal.prepaid.confirmation' => $prepaid, 'portal.shop.confirmation' => $shop] as $route => $invoice) {
+            $this->page($route, $invoice)->assertOk()
+                ->assertDontSee('Pay Now')
+                ->assertDontSee(route('portal.invoices.pay-online', $invoice), false)
+                ->assertDontSee('Your pay link is on its way')
+                ->assertSee('Partially paid — $100.00');
+        }
+        foreach (['portal.prepaid.payment-status' => $prepaid, 'portal.shop.payment-status' => $shop] as $route => $invoice) {
+            $this->actingAs($this->person, 'portal')->getJson(route($route, $invoice))
+                ->assertJsonPath('payment_url', null);
+        }
+
+        // The invoice page keeps the BenjiPays POST.
+        $this->page('portal.invoices.show', $prepaid)->assertOk()
+            ->assertSee('method="POST" action="'.route('portal.invoices.pay-online', $prepaid).'"', false);
+        Http::assertNothingSent();
+    }
+
+    // ── CSRF and escaping on the POST and link renders ──
+
+    /** The rendered form opens with the page's own CSRF token as its first field. */
+    private function assertPostFormCarriesToken(string $html, string $action): void
+    {
+        $this->assertSame(1, preg_match('/<meta name="csrf-token" content="([^"]+)"/', $html, $meta), 'page has a csrf meta token');
+        $this->assertMatchesRegularExpression(
+            '#<form method="POST" action="'.preg_quote($action, '#').'" class="d-inline">\s*<input type="hidden" name="_token" value="'.preg_quote($meta[1], '#').'"#',
+            $html,
+        );
+    }
+
+    public function test_the_pay_now_post_on_the_confirmations_carries_the_csrf_token(): void
+    {
+        $this->enableBenjiPays();
+        $prepaid = $this->invoice(['qbo_invoice_id' => '4259']);
+        $shop = $this->shopInvoice(['qbo_invoice_id' => '4260']);
+
+        foreach (['portal.prepaid.confirmation' => $prepaid, 'portal.shop.confirmation' => $shop] as $route => $invoice) {
+            $html = $this->page($route, $invoice)->assertOk()->assertSee('Pay Now')->getContent();
+            $this->assertPostFormCarriesToken($html, route('portal.invoices.pay-online', $invoice));
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_the_pay_online_post_on_the_invoice_page_carries_the_csrf_token(): void
+    {
+        $this->enableBenjiPays();
+        $invoice = $this->invoice(['qbo_invoice_id' => '4261']);
+
+        $html = $this->page('portal.invoices.show', $invoice)->assertOk()->assertSee('Pay Online')->getContent();
+        $this->assertPostFormCarriesToken($html, route('portal.invoices.pay-online', $invoice));
+        Http::assertNothingSent();
+    }
+
+    public function test_both_poll_scripts_post_with_the_csrf_token_and_escape_the_payment_url(): void
+    {
+        // No link yet and a billing backend on the client: the poll is on the page.
+        foreach (['portal.prepaid.confirmation' => $this->invoice(), 'portal.shop.confirmation' => $this->shopInvoice()] as $route => $invoice) {
+            $this->page($route, $invoice)->assertOk()
+                ->assertSee('payment-status', false)
+                ->assertSeeInOrder([
+                    "if (data.payment_method === 'post') {",
+                    "const token = document.querySelector('meta[name=\"csrf-token\"]').getAttribute('content');",
+                    "return '<form method=\"POST\" action=\"' + esc(data.payment_url) + '\" class=\"d-inline\">' +",
+                    "'<input type=\"hidden\" name=\"_token\" value=\"' + esc(token) + '\">' +",
+                    "return '<a href=\"' + esc(data.payment_url) + '\" target=\"_blank\"",
+                ], false);
+        }
     }
 
     // ── Pay-pending copy and the phone clause ──

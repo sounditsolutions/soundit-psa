@@ -76,8 +76,9 @@
                     This order's invoice is {{ strtolower($invoice->status->label()) }} and is not payable — no payment is due. If you have questions, please contact us.
                 </div>
             @elseif($invoice->qboPartialBalanceLog())
-                {{-- #1173: partially paid. PortalPayLink withholds the
-                     full-total billing link, so no link is "on its way";
+                {{-- #1173: partially paid. PortalPayLink::forOrderConfirmation()
+                     offers no Pay Now from any source here (it would read, and
+                     may charge, the full total), so no link is "on its way";
                      say what is owed instead. --}}
                 <div class="card mb-4"><div class="card-body">
                     @include('portal.invoices.partials.qbo-balance-note')

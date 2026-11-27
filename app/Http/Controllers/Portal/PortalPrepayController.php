@@ -166,7 +166,7 @@ class PortalPrepayController extends Controller
         return view('portal.prepaid.confirmation', [
             'invoice' => $invoice,
             'totalHours' => $totalHours,
-            'payLink' => PortalPayLink::for($invoice),
+            'payLink' => PortalPayLink::forOrderConfirmation($invoice),
             'awaitingSync' => PortalPayLink::awaitingSync($invoice),
         ]);
     }
@@ -215,7 +215,7 @@ class PortalPrepayController extends Controller
         $invoice = $invoice->fresh();
         // The shared rule gates the whole provider decision on payability
         // (psa-bl36l R2A).
-        $payLink = PortalPayLink::for($invoice);
+        $payLink = PortalPayLink::forOrderConfirmation($invoice);
 
         return response()->json([
             'payment_url' => $payLink?->url,

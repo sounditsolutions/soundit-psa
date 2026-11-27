@@ -140,7 +140,7 @@ class PortalOrderController extends Controller
         // the order (psa-bl36l R2A).
         return view('portal.shop.confirmation', [
             'invoice' => $invoice,
-            'payLink' => PortalPayLink::for($invoice),
+            'payLink' => PortalPayLink::forOrderConfirmation($invoice),
             'awaitingSync' => PortalPayLink::awaitingSync($invoice),
         ]);
     }
@@ -159,7 +159,7 @@ class PortalOrderController extends Controller
         $invoice = $invoice->fresh();
         // The shared rule gates the whole provider decision on payability
         // (psa-bl36l R2A).
-        $payLink = PortalPayLink::for($invoice);
+        $payLink = PortalPayLink::forOrderConfirmation($invoice);
 
         return response()->json([
             'payment_url' => $payLink?->url,
