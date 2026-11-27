@@ -135,6 +135,15 @@ class SendTicketNotification implements ShouldQueue
             return "Auto top-up invoice generated: {$client} — Invoice #{$invoiceNumber}";
         }
 
+        if ($event === NotificationEventType::InvoicePushFailed) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            $client = $ctx['client'] ?? 'Unknown client';
+            $invoiceNumber = $ctx['invoice_number'] ?? '?';
+            $backend = $ctx['backend'] ?? 'Unknown';
+
+            return "Invoice push failed: {$client} - Invoice #{$invoiceNumber} ({$backend})";
+        }
+
         $ticketRef = $ticket ? "[{$ticket->display_id}]" : '';
         $ticketSubject = $ticket ? Str::limit($ticket->subject, 60) : '';
 
@@ -273,6 +282,30 @@ class SendTicketNotification implements ShouldQueue
             $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
             $lines[] = '';
             if ($invoiceId = $ctx['invoice_id'] ?? null) {
+                $lines[] = 'View invoice:';
+                $lines[] = route('invoices.show', $invoiceId);
+            }
+
+            return implode("\n", $lines);
+        }
+
+        if ($event === NotificationEventType::InvoicePushFailed) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            // The body is rendered as Markdown into an HTML email, so each context
+            // value is kept on one line, HTML-escaped and Markdown-escaped.
+            $esc = fn ($value): string => addcslashes(htmlspecialchars(trim(preg_replace('/\s+/', ' ', (string) $value)), ENT_NOQUOTES), '\\`*_[]~#');
+            $lines[] = 'An invoice could not be pushed to billing.';
+            $lines[] = '';
+            $lines[] = 'Invoice: #'.$esc($ctx['invoice_number'] ?? '?');
+            $lines[] = 'Client: '.$esc($ctx['client'] ?? 'Unknown');
+            $lines[] = 'Backend: '.$esc($ctx['backend'] ?? 'Unknown');
+            $lines[] = 'Error: '.$esc($ctx['error'] ?? 'Unknown');
+            if ($ctx['portal_order'] ?? false) {
+                $lines[] = '';
+                $lines[] = 'A client ordered this in the portal and is waiting for a pay link. Push the invoice from its page, or send the client the pay link.';
+            }
+            if ($invoiceId = $ctx['invoice_id'] ?? null) {
+                $lines[] = '';
                 $lines[] = 'View invoice:';
                 $lines[] = route('invoices.show', $invoiceId);
             }

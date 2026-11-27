@@ -710,14 +710,23 @@ class NotificationService
         }
     }
 
-    public function notifyInvoicePushFailed(\App\Models\Invoice $invoice, string $backend, string $error): void
+    /**
+     * $portalOrder: the invoice came from a client's portal order and the client
+     * is waiting for a pay link; the email then says so and what to do.
+     */
+    public function notifyInvoicePushFailed(\App\Models\Invoice $invoice, string $backend, string $error, bool $portalOrder = false): void
     {
-        $context = json_encode([
+        $context = [
+            'invoice_id' => $invoice->id,
             'invoice_number' => $invoice->invoice_number,
             'client' => $invoice->client?->name,
             'backend' => $backend,
             'error' => $error,
-        ]);
+        ];
+        if ($portalOrder) {
+            $context['portal_order'] = true;
+        }
+        $context = json_encode($context);
 
         $users = User::where('is_active', true)->whereNotNull('email')->get();
 

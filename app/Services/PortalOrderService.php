@@ -131,13 +131,27 @@ class PortalOrderService
     {
         $client = $invoice->client;
 
+        if (! $client->stripe_customer_id && ! $client->qbo_customer_id) {
+            Log::warning('[PortalOrder] Client not mapped to any billing backend; invoice not pushed', [
+                'invoice_id' => $invoice->id,
+                'client_id' => $client->id,
+            ]);
+            $this->alertPushFailed($invoice, 'None', "Client \"{$client->name}\" is not mapped to QBO or Stripe.", true);
+
+            return;
+        }
+
+        $backend = null;
+
         try {
             if ($client->stripe_customer_id) {
+                $backend = 'Stripe';
                 app(StripeSyncService::class)->pushInvoiceToStripe($invoice);
                 Log::info('[PortalOrder] Invoice pushed to Stripe', [
                     'invoice_id' => $invoice->id,
                 ]);
-            } elseif ($client->qbo_customer_id) {
+            } else {
+                $backend = 'QBO';
                 app(QboSyncService::class)->pushInvoiceToQbo($invoice);
                 Log::info('[PortalOrder] Invoice pushed to QBO', [
                     'invoice_id' => $invoice->id,
@@ -146,6 +160,24 @@ class PortalOrderService
         } catch (\Throwable $e) {
             Log::warning('[PortalOrder] Billing backend push failed — staff can push manually', [
                 'invoice_id' => $invoice->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->alertPushFailed($invoice, $backend ?? 'None', $e->getMessage(), true);
+        }
+    }
+
+    /**
+     * Email opted-in staff that this invoice did not reach billing. A failure
+     * of the alert itself is logged and swallowed: it must never affect the order.
+     */
+    private function alertPushFailed(Invoice $invoice, string $backend, string $error, bool $portalOrder): void
+    {
+        try {
+            app(NotificationService::class)->notifyInvoicePushFailed($invoice, $backend, $error, $portalOrder);
+        } catch (\Throwable $e) {
+            Log::warning('[PortalOrder] Invoice push-failure alert threw', [
+                'invoice_id' => $invoice->id,
+                'exception' => $e::class,
                 'error' => $e->getMessage(),
             ]);
         }
