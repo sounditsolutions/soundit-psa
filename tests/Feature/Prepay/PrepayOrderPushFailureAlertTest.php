@@ -173,16 +173,34 @@ class PrepayOrderPushFailureAlertTest extends TestCase
     public function test_the_auto_top_up_caller_alerts_without_the_portal_flag(): void
     {
         $client = Client::create(['name' => 'Example Dental Co.']);
-        $invoice = Invoice::create([
+        $sku = Sku::create([
+            'name' => 'Example Prepaid Hour Block',
+            'sku_code' => 'EX-PREPAID-'.uniqid(),
+            'unit_price' => 100.00,
+            'unit_cost' => 40.00,
+            'prepaid_time_minutes' => 60,
+            'is_taxable' => false,
+            'is_active' => true,
+        ]);
+        $contract = Contract::create([
             'client_id' => $client->id,
-            'invoice_number' => 'EX-1001',
-            'invoice_date' => '2026-11-01',
-            'due_date' => '2026-11-01',
-            'status' => InvoiceStatus::Posted,
+            'name' => 'Example Managed Services',
+            'type' => 'managed',
+            'status' => 'active',
+            'start_date' => '2026-01-01',
+            'prepay_as_amount' => false,
+            'prepay_total' => 1,
+            'prepay_used' => 1,
+            'prepay_balance' => 0,
+            'prepay_alert_threshold' => 2,
+            'prepay_auto_topup_enabled' => true,
+            'prepay_auto_topup_qty' => 1,
+            'portal_prepay_sku_id' => $sku->id,
         ]);
 
-        app(\App\Services\PrepayOrderService::class)->pushToBillingBackend($invoice, portalOrder: false);
+        app(\App\Services\PrepayAlertService::class)->checkThreshold($contract);
 
+        $this->assertSame(1, Invoice::count(), 'the auto top-up invoice was created');
         $alerts = $this->pushFailedAlerts();
         $this->assertCount(1, $alerts);
         $this->assertSame('None', $alerts[0]['backend']);
