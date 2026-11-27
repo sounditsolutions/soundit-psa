@@ -34,15 +34,7 @@
                                 </td>
                                 <td><span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span></td>
                                 <td class="text-end">
-                                    @if($invoice->paysOnlineViaBenjiPays())
-                                        {{-- #2065: POST mints a BenjiPays applied link priced at the balance. --}}
-                                        <form method="POST" action="{{ route('portal.invoices.pay-online', $invoice) }}" class="d-inline">
-                                            @csrf
-                                            <button type="submit" class="btn btn-sm btn-accent">Pay Online</button>
-                                        </form>
-                                    @elseif($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
-                                        <a href="{{ $invoice->stripe_invoice_url }}" target="_blank" class="btn btn-sm btn-accent">Pay Online</a>
-                                    @endif
+                                    @include('portal.invoices.partials.pay-online', ['icon' => false])
                                 </td>
                             </tr>
                         @endforeach

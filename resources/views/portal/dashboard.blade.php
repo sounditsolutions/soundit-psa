@@ -62,6 +62,20 @@
                     @endforeach
                 </div>
             @endif
+            {{-- A portal-prepay SKU's promo in force now (same window check the
+                 purchase charges by). Copy pending approval; a change is a
+                 string swap here. Hours and prices come from the SKU. --}}
+            @foreach($prepayPromos as $promo)
+                <div class="portal-promo-line d-flex justify-content-between align-items-center flex-wrap gap-2 mt-3">
+                    <div>
+                        <span class="badge rounded-pill portal-promo-tag me-1">Special</span>
+                        <strong>{{ $promo['hours'] }} {{ $promo['hours'] == 1 ? 'hour' : 'hours' }} for ${{ number_format($promo['promo'], 2) }}</strong>
+                        <span class="text-muted">(normally ${{ number_format($promo['normal'], 2) }})</span>
+                        until {{ $promo['ends_at']->format('M j, Y g:i A T') }}.
+                    </div>
+                    <a href="{{ $promo['url'] }}" class="fw-semibold">See the special &rarr;</a>
+                </div>
+            @endforeach
         </div>
     </div>
 @endif

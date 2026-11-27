@@ -70,6 +70,25 @@
     font-weight: 600;
 }
 
+/* ── Support Hours promo line (flat: hairline border + canvas tone) ── */
+.portal-promo-line {
+    border: 1px solid #e5e7eb;
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+}
+
+.portal-promo-line a {
+    color: var(--primary);
+}
+
+.portal-promo-tag {
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    background: transparent;
+    font-weight: 600;
+}
+
 /* ── Portal content area ── */
 .portal-content {
     min-height: calc(100vh - 120px);

@@ -63,22 +63,10 @@
 
         {{-- Payment --}}
         <div id="paymentSection">
-            @if($paymentUrl)
-                <div class="card mb-4">
-                    <div class="card-body text-center">
-                        <p class="mb-2">Ready to pay?</p>
-                        <a href="{{ $paymentUrl }}" target="_blank" class="btn btn-accent btn-lg">
-                            <i class="bi bi-credit-card me-1"></i>Pay Now — ${{ number_format($invoice->total, 2) }}
-                        </a>
-                    </div>
-                </div>
+            @if($payLink)
+                @include('portal.partials.pay-now')
             @elseif($awaitingSync)
-                <div class="card mb-4" id="paymentLoading">
-                    <div class="card-body text-center py-3">
-                        <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
-                        <span class="text-muted">Preparing payment link...</span>
-                    </div>
-                </div>
+                @include('portal.partials.pay-pending')
             @elseif(! $invoice->status->isClientPayable())
                 {{-- The invoice is no longer payable (e.g. staff voided it). Give a
                      truthful terminal state — do NOT promise a payment link that will
@@ -87,11 +75,15 @@
                     <i class="bi bi-info-circle me-1"></i>
                     This order's invoice is {{ strtolower($invoice->status->label()) }} and is not payable — no payment is due. If you have questions, please contact us.
                 </div>
+            @elseif($invoice->qboPartialBalanceLog())
+                {{-- #1173: partially paid. PortalPayLink withholds the
+                     full-total billing link, so no link is "on its way";
+                     say what is owed instead. --}}
+                <div class="card mb-4"><div class="card-body">
+                    @include('portal.invoices.partials.qbo-balance-note')
+                </div></div>
             @else
-                <div class="alert alert-info">
-                    <i class="bi bi-info-circle me-1"></i>
-                    Your order has been received. You'll receive a payment link shortly.
-                </div>
+                @include('portal.partials.pay-pending')
             @endif
         </div>
 
@@ -120,6 +112,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function fmt(n) { return '$' + n.toFixed(2); }
 
+    function esc(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // The BenjiPays source is a POST (a vendor mint); every other source is a link.
+    function payButton(data) {
+        const label = '<i class="bi bi-credit-card me-1"></i>Pay Now — ' + fmt(data.total);
+        if (data.payment_method === 'post') {
+            const token = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+            return '<form method="POST" action="' + esc(data.payment_url) + '" class="d-inline">' +
+                '<input type="hidden" name="_token" value="' + esc(token) + '">' +
+                '<button type="submit" class="btn btn-accent btn-lg">' + label + '</button></form>';
+        }
+        return '<a href="' + esc(data.payment_url) + '" target="_blank" rel="noopener" class="btn btn-accent btn-lg">' + label + '</a>';
+    }
+
     function checkSync() {
         fetch(pollUrl, { headers: { 'Accept': 'application/json' } })
             .then(r => r.json())
@@ -136,9 +144,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 if (data.payment_url) {
                     section.innerHTML = '<div class="card mb-4"><div class="card-body text-center">' +
-                        '<p class="mb-2">Ready to pay?</p>' +
-                        '<a href="' + data.payment_url + '" target="_blank" class="btn btn-accent btn-lg">' +
-                        '<i class="bi bi-credit-card me-1"></i>Pay Now — ' + fmt(data.total) + '</a></div></div>';
+                        '<p class="mb-2">Ready to pay?</p>' + payButton(data) + '</div></div>';
                 } else if (data.client_payable === false) {
                     // Terminal: no longer payable (e.g. staff voided it mid-poll).
                     // Stop polling and tell the truth (psa-bl36l R4/A).
@@ -152,12 +158,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         badge.className = 'badge ' + (data.status_badge || '');
                     }
                 } else {
+                    // Out of attempts: stop and leave the "pay link is on its
+                    // way" block in place; it already says what to do next.
                     attempts++;
-                    if (attempts >= maxAttempts) {
-                        section.innerHTML = '<div class="alert alert-info">' +
-                            '<i class="bi bi-info-circle me-1"></i>' +
-                            'Your order has been received. You\'ll receive a payment link shortly.</div>';
-                    } else {
+                    if (attempts < maxAttempts) {
                         setTimeout(checkSync, 3000);
                     }
                 }

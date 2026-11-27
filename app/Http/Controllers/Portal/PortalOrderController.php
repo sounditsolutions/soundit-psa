@@ -9,6 +9,7 @@ use App\Models\Sku;
 use App\Services\NotificationService;
 use App\Services\PortalOrderService;
 use App\Support\PortalConfig;
+use App\Support\PortalPayLink;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -133,31 +134,14 @@ class PortalOrderController extends Controller
 
         $invoice->load('lines', 'client');
 
-        // Determine payment link state (mirrors the prepay confirmation).
-        // Never surface ANY payment affordance — Stripe URL, QBO billing link, or
-        // an "awaiting sync" promise — for a non-payable invoice, e.g. one staff
-        // voided after the order (psa-bl36l R2A). isClientPayable() is the single
-        // predicate the whole decision hangs on, not just the Stripe arm.
-        $client = $invoice->client;
-        $paymentUrl = null;
-        $awaitingSync = false;
-
-        if ($invoice->status->isClientPayable()) {
-            if ($invoice->stripe_invoice_url) {
-                $paymentUrl = $invoice->stripe_invoice_url;
-            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                    .urlencode($invoice->invoice_number)
-                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-            } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
-                $awaitingSync = true;
-            }
-        }
-
+        // Payment link state comes from the one shared rule (PortalPayLink).
+        // It never surfaces ANY payment affordance — a pay link or an "awaiting
+        // sync" promise — for a non-payable invoice, e.g. one staff voided after
+        // the order (psa-bl36l R2A).
         return view('portal.shop.confirmation', [
             'invoice' => $invoice,
-            'paymentUrl' => $paymentUrl,
-            'awaitingSync' => $awaitingSync,
+            'payLink' => PortalPayLink::for($invoice),
+            'awaitingSync' => PortalPayLink::awaitingSync($invoice),
         ]);
     }
 
@@ -173,22 +157,14 @@ class PortalOrderController extends Controller
         }
 
         $invoice = $invoice->fresh();
-        $paymentUrl = null;
-
-        // Gate the whole provider decision on payability, never the Stripe arm
-        // alone — a Void invoice must never return a pay URL (psa-bl36l R2A).
-        if ($invoice->status->isClientPayable()) {
-            if ($invoice->stripe_invoice_url) {
-                $paymentUrl = $invoice->stripe_invoice_url;
-            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                    .urlencode($invoice->invoice_number)
-                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-            }
-        }
+        // The shared rule gates the whole provider decision on payability
+        // (psa-bl36l R2A).
+        $payLink = PortalPayLink::for($invoice);
 
         return response()->json([
-            'payment_url' => $paymentUrl,
+            'payment_url' => $payLink?->url,
+            // The BenjiPays source is a POST (a vendor mint), never a bare link.
+            'payment_method' => $payLink?->isPost() ? 'post' : 'get',
             // Payability signal (psa-bl36l R4/A): stop the poll + show a terminal
             // state when a Posted order is voided mid-poll.
             'client_payable' => $invoice->status->isClientPayable(),

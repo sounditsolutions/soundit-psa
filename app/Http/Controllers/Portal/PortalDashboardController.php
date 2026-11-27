@@ -6,8 +6,11 @@ use App\Enums\InvoiceStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Contract;
 use App\Models\Invoice;
+use App\Models\Sku;
 use App\Models\Ticket;
+use Carbon\CarbonInterface;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\View\View;
 
 class PortalDashboardController extends Controller
@@ -54,12 +57,18 @@ class PortalDashboardController extends Controller
 
         $totalPrepayHours = $prepayContracts->sum('prepay_balance');
 
-        // Check if client has any contracts configured for portal prepaid purchases
-        $hasPurchasableContracts = Contract::where('client_id', $clientId)
+        // Contracts configured for portal prepaid purchases (the same filter
+        // the purchase flow's selectContract() uses).
+        $purchasableContracts = Contract::where('client_id', $clientId)
             ->active()
             ->whereNotNull('portal_prepay_sku_id')
             ->where(fn ($q) => $q->where('prepay_as_amount', false)->orWhereNull('prepay_as_amount'))
-            ->exists();
+            ->with('portalPrepaySku')
+            ->orderBy('name')
+            ->get();
+
+        $hasPurchasableContracts = $purchasableContracts->isNotEmpty();
+        $prepayPromos = $this->prepayPromos($purchasableContracts);
 
         // #864: install tokens expire, and PortalInstallService::findByToken()
         // rejects an expired one with the same "not valid" copy an invalid
@@ -80,8 +89,47 @@ class PortalDashboardController extends Controller
             'prepayContracts',
             'totalPrepayHours',
             'hasPurchasableContracts',
+            'prepayPromos',
             'clientId',
             'installToken',
         ));
+    }
+
+    /**
+     * One line per portal-prepay SKU whose promo is in force right now, for
+     * the Support Hours card. "In force" is Sku::portalPromoInForce(), the
+     * same inclusive window check Sku::portalPrepayUnitPrice() charges by, read
+     * at one instant, so the card never advertises a price the purchase would
+     * not charge. Hours and prices come from the SKU. An inactive SKU is left
+     * out: its purchase is refused.
+     *
+     * @param  Collection<int, Contract>  $contracts
+     * @return list<array{hours: float, promo: float, normal: float, ends_at: CarbonInterface, url: string}>
+     */
+    private function prepayPromos(Collection $contracts): array
+    {
+        $now = now();
+        $promos = [];
+
+        foreach ($contracts->groupBy('portal_prepay_sku_id') as $group) {
+            $sku = $group->first()->portalPrepaySku;
+
+            if ($sku === null || ! $sku->is_active || ! $sku->portalPromoInForce($now)) {
+                continue;
+            }
+
+            $promos[] = [
+                'hours' => round($sku->prepaid_time_minutes / 60, 1),
+                'promo' => $sku->portalPrepayUnitPrice($now),
+                'normal' => (float) $sku->unit_price,
+                'ends_at' => $sku->portal_promo_ends_at->copy()->setTimezone(Sku::PROMO_TIMEZONE),
+                // One contract on this SKU: straight to its purchase page.
+                'url' => $group->count() === 1
+                    ? route('portal.prepaid.form', $group->first())
+                    : route('portal.prepaid.select'),
+            ];
+        }
+
+        return $promos;
     }
 }

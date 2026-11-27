@@ -113,8 +113,10 @@ class PortalInvoiceController extends Controller
      * The single exit to Stripe for both give-up paths, guarded for both.
      *
      * Reaching this method at all means the client clicked a Pay Online POST,
-     * and the three portal surfaces render that POST only while
-     * paysOnlineViaBenjiPays() is true — a toggle-off (or no-key) install
+     * and every portal surface that renders that POST does so only while
+     * paysOnlineViaBenjiPays() is true (the invoice pages and the order
+     * confirmations through App\Support\PortalPayLink, the dashboard's unpaid
+     * list on the same predicate) — a toggle-off (or no-key) install
      * renders a direct Stripe link instead and never arrives here. So the page
      * behind every click was the BenjiPays surface, which drops the "will
      * charge the full $X" caveat because the vendor page is priced at the
