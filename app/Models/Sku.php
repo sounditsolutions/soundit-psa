@@ -231,6 +231,54 @@ class Sku extends Model
             : (float) $this->unit_price;
     }
 
+    // ── Portal purchase-page anchor ──
+
+    /**
+     * The hourly-rate anchor shown above a block's price on the portal
+     * purchase page: "N hours at our hourly rate ($X/h) $Y".
+     *
+     * The hourly SKU is THE active SKU in this SKU's category with
+     * prepaid_time_minutes = 60. Fail closed: no category, zero matches or
+     * more than one match give null, never a guessed rate. So does a value
+     * (rate x this block's hours) that is not higher than unit_price, since an
+     * anchor at or below the block price says nothing true about a saving.
+     *
+     * Computed, not stored: no per-SKU field exists for it.
+     *
+     * @return array{rate: float, hours: float, value: float}|null
+     */
+    public function portalHourlyAnchor(): ?array
+    {
+        if ($this->category === null || trim((string) $this->category) === ''
+            || (int) $this->prepaid_time_minutes <= 0) {
+            return null;
+        }
+
+        $hourly = self::query()
+            ->active()
+            ->where('category', $this->category)
+            ->where('prepaid_time_minutes', 60)
+            ->limit(2)
+            ->get();
+
+        if ($hourly->count() !== 1) {
+            return null;
+        }
+
+        $rate = (float) $hourly->first()->unit_price;
+        $valueCents = (int) round($rate * 100 * (int) $this->prepaid_time_minutes / 60);
+
+        if ($valueCents <= (int) round((float) $this->unit_price * 100)) {
+            return null;
+        }
+
+        return [
+            'rate' => $rate,
+            'hours' => round((int) $this->prepaid_time_minutes / 60, 2),
+            'value' => $valueCents / 100,
+        ];
+    }
+
     /**
      * Resolve the volume-pricing rate (price per GB) for a measured backup
      * storage total, using this SKU's tier rate card.

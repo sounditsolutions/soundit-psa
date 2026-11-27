@@ -72,6 +72,7 @@ class PortalPrepayController extends Controller
             'promoInForce' => $sku->portalPromoInForce($now),
             'promoNote' => $sku->portalPromoClientNote($now),
             'hoursPerUnit' => round($sku->prepaid_time_minutes / 60, 1),
+            'anchor' => $sku->portalHourlyAnchor(),
         ]);
     }
 

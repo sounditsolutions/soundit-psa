@@ -33,10 +33,14 @@
                             <td>
                                 <strong>${{ number_format($unitPrice, 2) }}</strong>
                                 <s class="text-muted ms-1">${{ number_format($sku->unit_price, 2) }}</s>
+                                @include('portal.prepaid.partials.price-anchor')
                                 <div class="small text-muted">{{ $promoNote }}</div>
                             </td>
                         @else
-                            <td>${{ number_format($unitPrice, 2) }}</td>
+                            <td>
+                                ${{ number_format($unitPrice, 2) }}
+                                @include('portal.prepaid.partials.price-anchor')
+                            </td>
                         @endif
                     </tr>
                     <tr>
