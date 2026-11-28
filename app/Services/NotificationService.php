@@ -711,8 +711,9 @@ class NotificationService
     }
 
     /**
-     * $portalOrder: the invoice came from a client's portal order and the client
-     * is waiting for a pay link; the email then says so and what to do.
+     * $portalOrder: the invoice came from a client's portal order. The email then
+     * adds one portal line: for a mapped backend, that the client is waiting for a
+     * pay link; for backend 'None', that the client must be mapped first.
      */
     public function notifyInvoicePushFailed(\App\Models\Invoice $invoice, string $backend, string $error, bool $portalOrder = false): void
     {

@@ -29,9 +29,9 @@ class InvoicePushFailedEmailTest extends TestCase
 {
     use RefreshDatabase;
 
-    private const PORTAL_LINE = 'A client ordered this in the portal and is waiting for a pay link. Push the invoice from its page, or send the client the pay link.';
+    private const PORTAL_LINE = "A client ordered this in the portal and is waiting for a pay link. The PSA can't re-push a posted invoice yet. Fix the error above, then ask development to push it.";
 
-    private const PORTAL_UNMAPPED_LINE = "This client isn't mapped to Stripe or QBO. Map the client, then push the invoice from its page.";
+    private const PORTAL_UNMAPPED_LINE = "This client isn't mapped to Stripe or QBO. Map the client, then ask development to push the invoice. The PSA can't re-push a posted invoice yet.";
 
     /** @var list<array{subject: string, body: string}> */
     private array $sent = [];

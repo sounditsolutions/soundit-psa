@@ -24,9 +24,10 @@ use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * A portal prepaid-time purchase whose billing push fails emails opted-in staff exactly
- * once through notifyInvoicePushFailed, flagged as a portal order, and the
- * order itself still completes. Synthetic data only; no vendor call is made.
+ * A portal prepaid-time purchase whose billing push fails emails active staff
+ * (unless they turned the alert off) exactly once through notifyInvoicePushFailed,
+ * flagged as a portal order, and the order itself still completes. An auto top-up
+ * that fails to push alerts the same way without the portal flag. Synthetic data only; no vendor call is made.
  */
 class PrepayOrderPushFailureAlertTest extends TestCase
 {

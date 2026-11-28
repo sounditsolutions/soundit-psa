@@ -163,7 +163,7 @@ class PrepayOrderService
     }
 
     /**
-     * Email opted-in staff that this invoice did not reach billing. A failure
+     * Email active staff who have not turned this alert off that this invoice did not reach billing. A failure
      * of the alert itself is logged and swallowed: it must never affect the order.
      */
     private function alertPushFailed(Invoice $invoice, string $backend, string $error, bool $portalOrder): void

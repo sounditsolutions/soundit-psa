@@ -23,8 +23,8 @@ use Mockery\MockInterface;
 use Tests\TestCase;
 
 /**
- * A portal shop order whose billing push fails emails opted-in staff exactly
- * once through notifyInvoicePushFailed, flagged as a portal order, and the
+ * A portal shop order whose billing push fails emails active staff (unless
+ * they turned the alert off) exactly once through notifyInvoicePushFailed, flagged as a portal order, and the
  * order itself still completes. Synthetic data only; no vendor call is made.
  */
 class PortalOrderPushFailureAlertTest extends TestCase
