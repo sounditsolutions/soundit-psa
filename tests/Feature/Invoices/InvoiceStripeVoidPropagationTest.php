@@ -671,7 +671,7 @@ class InvoiceStripeVoidPropagationTest extends TestCase
         $this->actingAs($person, 'portal')
             ->get(route('portal.prepaid.confirmation', $invoice))
             ->assertOk()
-            ->assertDontSee('payment link shortly')   // no false "payment coming"
+            ->assertDontSee('Your pay link is on its way') // no false "payment coming"
             ->assertDontSee('pay_conf')               // no live Stripe pay URL
             ->assertDontSee('View Invoice')           // dead link (Void 404s in portal) suppressed
             ->assertSee('not payable');               // truthful terminal state

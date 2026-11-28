@@ -104,12 +104,17 @@ final class PortalPayLink
      * invoice is payable, it has not already reached a backend that would
      * have produced a link (a Stripe page, or a QBO id with a billing URL),
      * and its client has a billing backend the order is being pushed to.
-     * A QBO invoice whose link is withheld as partially paid is therefore not
-     * "on its way".
+     * A partially paid invoice is never "on its way": forOrderConfirmation()
+     * offers it no link from any source, so the confirmation shows the
+     * balance note instead.
      */
     public static function awaitingSync(Invoice $invoice): bool
     {
         if (self::for($invoice) !== null || ! $invoice->status->isClientPayable()) {
+            return false;
+        }
+
+        if ($invoice->qboPartialBalanceLog() !== null) {
             return false;
         }
 

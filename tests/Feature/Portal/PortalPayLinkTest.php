@@ -324,6 +324,26 @@ class PortalPayLinkTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_a_partially_paid_qbo_invoice_with_no_pay_source_shows_the_balance_note_not_pay_pending(): void
+    {
+        // QBO id, no billing URL, no Stripe page, BenjiPays off; the client has a
+        // QBO customer id, so an unpaid invoice here would be "on its way".
+        $prepaid = $this->partial($this->invoice(['qbo_invoice_id' => '4262']));
+        $shop = $this->partial($this->shopInvoice(['qbo_invoice_id' => '4263']));
+
+        foreach (['portal.prepaid.confirmation' => $prepaid, 'portal.shop.confirmation' => $shop] as $route => $invoice) {
+            $this->page($route, $invoice)->assertOk()
+                ->assertDontSee('Your pay link is on its way')
+                ->assertDontSee('payment-status', false)   // no poll on the page
+                ->assertDontSee('Pay Now')
+                ->assertSee('Partially paid — $100.00');
+        }
+        foreach (['portal.prepaid.payment-status' => $prepaid, 'portal.shop.payment-status' => $shop] as $route => $invoice) {
+            $this->actingAs($this->person, 'portal')->getJson(route($route, $invoice))
+                ->assertJsonPath('payment_url', null);
+        }
+    }
+
     // ── CSRF and escaping on the POST and link renders ──
 
     /** The rendered form opens with the page's own CSRF token as its first field. */
@@ -372,6 +392,17 @@ class PortalPayLinkTest extends TestCase
                     "'<input type=\"hidden\" name=\"_token\" value=\"' + esc(token) + '\">' +",
                     "return '<a href=\"' + esc(data.payment_url) + '\" target=\"_blank\"",
                 ], false);
+        }
+    }
+
+    public function test_both_poll_scripts_define_esc_as_the_full_html_attribute_escape(): void
+    {
+        $body = "return String(s).replace(/&/g, '&amp;').replace(/\"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');";
+
+        foreach (['portal.prepaid.confirmation' => $this->invoice(), 'portal.shop.confirmation' => $this->shopInvoice()] as $route => $invoice) {
+            $html = $this->page($route, $invoice)->assertOk()->assertSee('payment-status', false)->getContent();
+            $this->assertSame(1, preg_match_all('/function esc\(s\) \{\s*([^}]*?)\s*\}/', $html, $m), $route.': one esc() definition');
+            $this->assertSame($body, $m[1][0], $route.': esc() body');
         }
     }
 
