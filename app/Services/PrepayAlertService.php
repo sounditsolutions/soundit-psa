@@ -110,7 +110,7 @@ class PrepayAlertService
             ]);
 
             // Push to billing backend
-            $this->prepayOrderService->pushToBillingBackend($invoice);
+            $this->prepayOrderService->pushToBillingBackend($invoice, portalOrder: false);
 
             // Notify
             $this->notificationService->notifyPrepayAutoTopUp($contract, $invoice, $totalHours);

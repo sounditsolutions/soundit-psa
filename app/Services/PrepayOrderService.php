@@ -121,19 +121,33 @@ class PrepayOrderService
 
     /**
      * Push the invoice to the client's billing backend (Stripe or QBO).
-     * Called via afterResponse() — not inline during the HTTP request.
+     * The portal purchase calls it from an app()->terminating() callback, after
+     * the response; the auto top-up (PrepayAlertService) calls it inline with
+     * $portalOrder false.
      */
-    public function pushToBillingBackend(Invoice $invoice): void
+    public function pushToBillingBackend(Invoice $invoice, bool $portalOrder = true): void
     {
         $client = $invoice->client;
 
+        if (! $client->stripe_customer_id && ! $client->qbo_customer_id) {
+            Log::warning('[PrepayOrder] Client not mapped to any billing backend; invoice not pushed', [
+                'invoice_id' => $invoice->id,
+                'client_id' => $client->id,
+            ]);
+            $this->alertPushFailed($invoice, 'None', "Client \"{$client->name}\" is not mapped to QBO or Stripe.", $portalOrder);
+
+            return;
+        }
+
+        $backend = $client->stripe_customer_id ? 'Stripe' : 'QBO';
+
         try {
-            if ($client->stripe_customer_id) {
+            if ($backend === 'Stripe') {
                 app(StripeSyncService::class)->pushInvoiceToStripe($invoice);
                 Log::info('[PrepayOrder] Invoice pushed to Stripe', [
                     'invoice_id' => $invoice->id,
                 ]);
-            } elseif ($client->qbo_customer_id) {
+            } else {
                 app(QboSyncService::class)->pushInvoiceToQbo($invoice);
                 Log::info('[PrepayOrder] Invoice pushed to QBO', [
                     'invoice_id' => $invoice->id,
@@ -142,6 +156,24 @@ class PrepayOrderService
         } catch (\Throwable $e) {
             Log::warning('[PrepayOrder] Billing backend push failed — staff can push manually', [
                 'invoice_id' => $invoice->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->alertPushFailed($invoice, $backend, $e->getMessage(), $portalOrder);
+        }
+    }
+
+    /**
+     * Email active staff who have not turned this alert off that this invoice did not reach billing. A failure
+     * of the alert itself is logged and swallowed: it must never affect the order.
+     */
+    private function alertPushFailed(Invoice $invoice, string $backend, string $error, bool $portalOrder): void
+    {
+        try {
+            app(NotificationService::class)->notifyInvoicePushFailed($invoice, $backend, $error, $portalOrder);
+        } catch (\Throwable $e) {
+            Log::warning('[PrepayOrder] Invoice push-failure alert threw', [
+                'invoice_id' => $invoice->id,
+                'exception' => $e::class,
                 'error' => $e->getMessage(),
             ]);
         }

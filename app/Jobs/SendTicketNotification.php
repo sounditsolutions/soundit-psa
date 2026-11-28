@@ -135,6 +135,15 @@ class SendTicketNotification implements ShouldQueue
             return "Auto top-up invoice generated: {$client} — Invoice #{$invoiceNumber}";
         }
 
+        if ($event === NotificationEventType::InvoicePushFailed) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            $client = $ctx['client'] ?? 'Unknown client';
+            $invoiceNumber = $ctx['invoice_number'] ?? '?';
+            $backend = $ctx['backend'] ?? 'Unknown';
+
+            return "Invoice push failed: {$client} - Invoice #{$invoiceNumber} ({$backend})";
+        }
+
         $ticketRef = $ticket ? "[{$ticket->display_id}]" : '';
         $ticketSubject = $ticket ? Str::limit($ticket->subject, 60) : '';
 
@@ -273,6 +282,35 @@ class SendTicketNotification implements ShouldQueue
             $lines[] = 'Invoice: #'.($ctx['invoice_number'] ?? '?');
             $lines[] = '';
             if ($invoiceId = $ctx['invoice_id'] ?? null) {
+                $lines[] = 'View invoice:';
+                $lines[] = route('invoices.show', $invoiceId);
+            }
+
+            return implode("\n", $lines);
+        }
+
+        if ($event === NotificationEventType::InvoicePushFailed) {
+            $ctx = json_decode($this->extraContext ?? '{}', true);
+            // The body is rendered as GitHub-flavoured Markdown into an HTML email.
+            // Each context value has its whitespace runs collapsed to one space and
+            // is trimmed; < > & are HTML-escaped (quotes are not); and \ ` * _ [ ] ~ #
+            // are backslash-escaped. Nothing else is escaped: a bare URL or email
+            // address in a value may still be autolinked.
+            $esc = fn ($value): string => addcslashes(htmlspecialchars(trim(preg_replace('/\s+/', ' ', (string) $value)), ENT_NOQUOTES), '\\`*_[]~#');
+            $lines[] = 'An invoice could not be pushed to billing.';
+            $lines[] = '';
+            $lines[] = 'Invoice: #'.$esc($ctx['invoice_number'] ?? '?');
+            $lines[] = 'Client: '.$esc($ctx['client'] ?? 'Unknown');
+            $lines[] = 'Backend: '.$esc($ctx['backend'] ?? 'Unknown');
+            $lines[] = 'Error: '.$esc($ctx['error'] ?? 'Unknown');
+            if ($ctx['portal_order'] ?? false) {
+                $lines[] = '';
+                $lines[] = ($ctx['backend'] ?? null) === 'None'
+                    ? "This client isn't mapped to Stripe or QBO. Map the client, then ask development to push the invoice. The PSA can't re-push a posted invoice yet."
+                    : "A client ordered this in the portal and is waiting for a pay link. The PSA can't re-push a posted invoice yet. Fix the error above, then ask development to push it.";
+            }
+            if ($invoiceId = $ctx['invoice_id'] ?? null) {
+                $lines[] = '';
                 $lines[] = 'View invoice:';
                 $lines[] = route('invoices.show', $invoiceId);
             }
