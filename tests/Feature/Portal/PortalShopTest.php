@@ -3,6 +3,7 @@
 namespace Tests\Feature\Portal;
 
 use App\Enums\InvoiceStatus;
+use App\Enums\NotificationEventType;
 use App\Enums\PersonType;
 use App\Jobs\SendTicketNotification;
 use App\Models\Client;
@@ -144,7 +145,7 @@ class PortalShopTest extends TestCase
             'expected_prices' => [$sku->id => (string) $sku->unit_price],
         ]);
 
-        Bus::assertDispatched(SendTicketNotification::class);
+        Bus::assertDispatched(SendTicketNotification::class, fn ($job) => (new \ReflectionProperty($job, 'eventType'))->getValue($job) === NotificationEventType::PortalProductOrder->value);
     }
 
     public function test_duplicate_order_within_window_reuses_invoice(): void

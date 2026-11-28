@@ -177,6 +177,21 @@ class PortalOrderPushFailureAlertTest extends TestCase
 
         $this->order();
 
-        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => $msg === '[PortalOrder] Invoice push-failure alert threw')->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg, $ctx = []) => $msg === '[PortalOrder] Invoice push-failure alert threw'
+            && ($ctx['exception'] ?? null) === \LogicException::class
+            && ($ctx['error'] ?? null) === 'Synthetic notifier fault')->once();
+    }
+
+    public function test_a_client_mapped_to_both_backends_is_pushed_to_stripe_and_alerts_with_backend_stripe(): void
+    {
+        $this->mock(StripeSyncService::class, fn (MockInterface $m) => $m->shouldReceive('pushInvoiceToStripe')->once()->andThrow(new \RuntimeException('Synthetic Stripe refusal')));
+        $this->mock(QboSyncService::class, fn (MockInterface $m) => $m->shouldReceive('pushInvoiceToQbo')->never());
+
+        $this->order(['stripe_customer_id' => 'cus_synthetic5', 'qbo_customer_id' => 'qbo-synthetic-5']);
+
+        $alerts = $this->pushFailedAlerts();
+        $this->assertCount(1, $alerts);
+        $this->assertSame('Stripe', $alerts[0]['backend']);
+        $this->assertSame('Synthetic Stripe refusal', $alerts[0]['error']);
     }
 }
