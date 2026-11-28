@@ -94,8 +94,9 @@ class InvoicePushFailedEmailTest extends TestCase
         $this->assertStringContainsString('Backend: QBO', $mail['body']);
         $this->assertStringContainsString('Error: Synthetic QBO refusal', $mail['body']);
         $this->assertStringContainsString(route('invoices.show', $invoice), $mail['body']);
-        $this->assertStringContainsString(self::PORTAL_LINE, $mail['body']);
+        $this->assertContains(self::PORTAL_LINE, explode("\n", $mail['body']));
         $this->assertStringNotContainsString(self::PORTAL_UNMAPPED_LINE, $mail['body']);
+        $this->assertStringNotContainsString('from the invoice page', $mail['body']);
     }
 
     public function test_portal_order_email_for_an_unmapped_client_has_the_unmapped_line_not_the_generic_one(): void
@@ -108,7 +109,7 @@ class InvoicePushFailedEmailTest extends TestCase
         $this->assertSame('Invoice push failed: Example Widgets Co. - Invoice #EX-2002 (None)', $mail['subject']);
         $this->assertContains(self::PORTAL_UNMAPPED_LINE, explode("\n", $mail['body']));
         $this->assertStringNotContainsString(self::PORTAL_LINE, $mail['body']);
-        $this->assertStringNotContainsString('send the client the pay link', $mail['body']);
+        $this->assertStringNotContainsString('from the invoice page', $mail['body']);
     }
 
     public function test_without_the_flag_the_portal_line_is_absent(): void
