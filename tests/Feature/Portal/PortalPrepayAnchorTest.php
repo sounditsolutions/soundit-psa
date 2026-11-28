@@ -24,9 +24,10 @@ use Tests\TestCase;
  * Synthetic prices: hourly 40.00; block 150 minutes at 80.00 (anchor 100.00);
  * promo 70.00. The value is computed in integer cents.
  *
- * The singular "hour" arm of the template is not reachable: a 60-minute
- * block in the category is itself a 60-minute match, so it either matches
- * only itself (value equal to its price: no anchor) or makes two matches.
+ * The singular "hour" arm of the template is reachable through an inactive
+ * 60-minute block: showPurchaseForm checks only is_portal_purchasable, and
+ * is_active is checked later, in store(). Pinned by
+ * test_an_inactive_60_minute_block_renders_the_singular_hour_arm.
  */
 class PortalPrepayAnchorTest extends TestCase
 {
@@ -273,6 +274,56 @@ class PortalPrepayAnchorTest extends TestCase
             ->assertSeeInOrder(['2.5 hours at our hourly rate ($19.99/h)', '$49.98', 'Block price', '$45.00'], false);
         $this->assertSame(
             ['rate' => 19.99, 'hours' => 2.5, 'value' => 49.98],
+            $this->block->fresh()->portalHourlyAnchor(),
+        );
+
+        // A half-cent tie on an even cent: 1997 cents x 150 / 60 = 4992.5,
+        // half-up to 4993 cents (half-even would give 4992).
+        Sku::where('prepaid_time_minutes', 60)->update(['unit_price' => 19.97]);
+
+        $this->page()
+            ->assertSeeInOrder(['2.5 hours at our hourly rate ($19.97/h)', '$49.93', 'Block price', '$45.00'], false);
+        $this->assertSame(
+            ['rate' => 19.97, 'hours' => 2.5, 'value' => 49.93],
+            $this->block->fresh()->portalHourlyAnchor(),
+        );
+    }
+
+    public function test_the_block_price_is_rounded_to_cents_not_truncated(): void
+    {
+        // 46 cents x 150 / 60 = 115 cents, equal to the 1.15 block price.
+        // 1.15 x 100 is 114.999... as a double: rounded it is 115 (no row);
+        // truncated it would be 114 and the row would show.
+        $this->block->update(['unit_price' => 1.15]);
+        $this->hourly(['unit_price' => 0.46]);
+
+        $this->page()->assertSee('$1.15')->assertDontSee('at our hourly rate')->assertDontSee('Block price');
+        $this->assertNull($this->block->fresh()->portalHourlyAnchor());
+    }
+
+    public function test_a_value_below_a_half_cent_over_the_block_price_rounds_down(): void
+    {
+        // 4001 cents x 100 / 60 = 6668.33, rounded to 6668 cents: equal to
+        // the 66.68 block price, so no row (rounding up would give 6669).
+        $this->block->update(['unit_price' => 66.68, 'prepaid_time_minutes' => 100]);
+        $this->hourly(['unit_price' => 40.01]);
+
+        $this->page()->assertSee('$66.68')->assertDontSee('at our hourly rate')->assertDontSee('Block price');
+        $this->assertNull($this->block->fresh()->portalHourlyAnchor());
+    }
+
+    public function test_an_inactive_60_minute_block_renders_the_singular_hour_arm(): void
+    {
+        // The inactive block is not a match for itself, so the one active
+        // 60-minute SKU is the hourly rate: 40.00 > 35.00.
+        $this->block->update(['unit_price' => 35.00, 'prepaid_time_minutes' => 60, 'is_active' => false]);
+        $this->hourly();
+
+        $this->page()
+            ->assertSeeInOrder(['1 hour at our hourly rate ($40.00/h)', '$40.00', 'Block price', '$35.00'], false)
+            ->assertDontSee('1 hours');
+        $this->assertSame(
+            ['rate' => 40.0, 'hours' => 1.0, 'value' => 40.0],
             $this->block->fresh()->portalHourlyAnchor(),
         );
     }
