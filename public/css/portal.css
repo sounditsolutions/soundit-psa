@@ -70,6 +70,12 @@
     font-weight: 600;
 }
 
+/* ── Purchase page price anchor ── */
+.portal-price-steps td {
+    padding: 0.125rem 1rem 0.125rem 0;
+    font-variant-numeric: tabular-nums;
+}
+
 /* ── Portal content area ── */
 .portal-content {
     min-height: calc(100vh - 120px);

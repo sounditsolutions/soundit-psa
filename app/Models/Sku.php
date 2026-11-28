@@ -231,6 +231,59 @@ class Sku extends Model
             : (float) $this->unit_price;
     }
 
+    // ── Portal purchase-page anchor ──
+
+    /**
+     * The hourly-rate anchor shown above a block's price on the portal
+     * purchase page: "N hours at our hourly rate ($X/h) $Y".
+     *
+     * The hourly SKU is THE active SKU in this SKU's category with
+     * prepaid_time_minutes = 60. Fail closed: no category, zero matches or
+     * more than one match give null, never a guessed rate. So does a value
+     * (rate x this block's hours, in integer cents) that is not higher than
+     * unit_price, since an anchor at or below the block price says nothing
+     * true about a saving. The comparison is against unit_price, never the
+     * promo price: during a promo a value between the two is still refused.
+     *
+     * Computed, not stored: no per-SKU field exists for it.
+     *
+     * @return array{rate: float, hours: float, value: float}|null
+     */
+    public function portalHourlyAnchor(): ?array
+    {
+        if ($this->category === null || trim((string) $this->category) === ''
+            || (int) $this->prepaid_time_minutes <= 0) {
+            return null;
+        }
+
+        $hourly = self::query()
+            ->active()
+            ->where('category', $this->category)
+            ->where('prepaid_time_minutes', 60)
+            ->limit(2)
+            ->get();
+
+        if ($hourly->count() !== 1) {
+            return null;
+        }
+
+        // Integer cents: the rate is taken to cents once, the value is rounded
+        // once, and the comparison with the block price is cent against cent.
+        $rateCents = (int) round((float) $hourly->first()->unit_price * 100);
+        $valueCents = (int) round($rateCents * (int) $this->prepaid_time_minutes / 60);
+        $blockCents = (int) round((float) $this->unit_price * 100);
+
+        if ($valueCents <= $blockCents) {
+            return null;
+        }
+
+        return [
+            'rate' => $rateCents / 100.0,
+            'hours' => round((int) $this->prepaid_time_minutes / 60, 2),
+            'value' => $valueCents / 100.0,
+        ];
+    }
+
     /**
      * Resolve the volume-pricing rate (price per GB) for a measured backup
      * storage total, using this SKU's tier rate card.
