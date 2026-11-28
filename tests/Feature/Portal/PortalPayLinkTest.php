@@ -236,6 +236,24 @@ class PortalPayLinkTest extends TestCase
             ->assertJsonPath('payment_url', null);
     }
 
+    public function test_a_paid_or_void_invoice_with_no_pay_source_is_not_pay_pending_on_either_confirmation(): void
+    {
+        // No Stripe URL and no QBO id, so the reached-backend clause cannot hide
+        // the status guard in awaitingSync(): only isClientPayable() keeps these
+        // off the pending block and the poll.
+        foreach ([InvoiceStatus::Void, InvoiceStatus::Paid] as $status) {
+            $routes = [
+                'portal.prepaid.confirmation' => $this->invoice(['status' => $status]),
+                'portal.shop.confirmation' => $this->shopInvoice(['status' => $status]),
+            ];
+            foreach ($routes as $route => $invoice) {
+                $this->page($route, $invoice)->assertOk()
+                    ->assertDontSee('Your pay link is on its way')
+                    ->assertDontSee('payment-status');
+            }
+        }
+    }
+
     // ── #1173: the full-amount caveat and the BenjiPays guard are kept ──
 
     public function test_a_partially_paid_qbo_invoice_is_not_offered_the_full_total_billing_link(): void
@@ -395,7 +413,7 @@ class PortalPayLinkTest extends TestCase
         }
     }
 
-    public function test_both_poll_scripts_define_esc_as_the_full_html_attribute_escape(): void
+    public function test_both_poll_scripts_pin_the_esc_body_to_the_amp_quote_lt_gt_replaces(): void
     {
         $body = "return String(s).replace(/&/g, '&amp;').replace(/\"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');";
 
