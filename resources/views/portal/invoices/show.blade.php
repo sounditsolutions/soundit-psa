@@ -21,23 +21,9 @@
             </div>
             <div class="text-end">
                 <span class="badge {{ $invoice->status->portalBadgeClass() }}">{{ $invoice->status->portalLabel() }}</span>
-                @if($invoice->paysOnlineViaBenjiPays())
-                    {{-- #2065: POST mints a BenjiPays applied link priced at the balance. --}}
-                    <div class="mt-2">
-                        <form method="POST" action="{{ route('portal.invoices.pay-online', $invoice) }}" class="d-inline">
-                            @csrf
-                            <button type="submit" class="btn btn-sm btn-accent">
-                                <i class="bi bi-credit-card me-1"></i>Pay Online
-                            </button>
-                        </form>
-                    </div>
-                @elseif($invoice->stripe_invoice_url && $invoice->status->isClientPayable())
-                    <div class="mt-2">
-                        <a href="{{ $invoice->stripe_invoice_url }}" target="_blank" class="btn btn-sm btn-accent">
-                            <i class="bi bi-credit-card me-1"></i>Pay Online
-                        </a>
-                    </div>
-                @endif
+                <div class="mt-2">
+                    @include('portal.invoices.partials.pay-online', ['icon' => true])
+                </div>
                 @include('portal.invoices.partials.qbo-balance-note')
             </div>
         </div>

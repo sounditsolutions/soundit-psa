@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Services\NotificationService;
 use App\Services\PrepayOrderService;
 use App\Support\PortalConfig;
+use App\Support\PortalPayLink;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -159,30 +160,14 @@ class PortalPrepayController extends Controller
         $totalPrepaidMinutes = (int) $invoice->lines->sum('prepaid_time_minutes');
         $totalHours = round($totalPrepaidMinutes / 60, 1);
 
-        // Determine payment link state. Gate the WHOLE decision (Stripe URL, QBO
-        // billing link, and the "awaiting sync" promise) on payability, so a Void
-        // invoice offers no pay link and no "payment coming" (psa-bl36l R2A).
-        $client = $invoice->client;
-        $paymentUrl = null;
-        $awaitingSync = false;
-
-        if ($invoice->status->isClientPayable()) {
-            if ($invoice->stripe_invoice_url) {
-                $paymentUrl = $invoice->stripe_invoice_url;
-            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                    .urlencode($invoice->invoice_number)
-                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-            } elseif ($client?->stripe_customer_id || $client?->qbo_customer_id) {
-                $awaitingSync = true;
-            }
-        }
-
+        // Payment link state comes from the one shared rule (PortalPayLink),
+        // gated on payability there, so a Void invoice offers no pay link and
+        // no "payment coming" (psa-bl36l R2A).
         return view('portal.prepaid.confirmation', [
             'invoice' => $invoice,
             'totalHours' => $totalHours,
-            'paymentUrl' => $paymentUrl,
-            'awaitingSync' => $awaitingSync,
+            'payLink' => PortalPayLink::forOrderConfirmation($invoice),
+            'awaitingSync' => PortalPayLink::awaitingSync($invoice),
         ]);
     }
 
@@ -228,21 +213,14 @@ class PortalPrepayController extends Controller
         }
 
         $invoice = $invoice->fresh();
-        $paymentUrl = null;
-
-        // Gate the whole provider decision on payability (psa-bl36l R2A).
-        if ($invoice->status->isClientPayable()) {
-            if ($invoice->stripe_invoice_url) {
-                $paymentUrl = $invoice->stripe_invoice_url;
-            } elseif ($invoice->qbo_invoice_id && PortalConfig::billingUrl()) {
-                $paymentUrl = PortalConfig::billingUrl().'/portal/pay/?invoiceNumber='
-                    .urlencode($invoice->invoice_number)
-                    .'&transactionAmount='.number_format($invoice->total, 2, '.', '');
-            }
-        }
+        // The shared rule gates the whole provider decision on payability
+        // (psa-bl36l R2A).
+        $payLink = PortalPayLink::forOrderConfirmation($invoice);
 
         return response()->json([
-            'payment_url' => $paymentUrl,
+            'payment_url' => $payLink?->url,
+            // The BenjiPays source is a POST (a vendor mint), never a bare link.
+            'payment_method' => $payLink?->isPost() ? 'post' : 'get',
             // Payability signal (psa-bl36l R4/A): lets the confirmation poll stop
             // and render a truthful terminal state when a Posted order is voided
             // mid-poll, instead of forever promising a payment link.
